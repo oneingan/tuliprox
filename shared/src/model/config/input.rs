@@ -7,11 +7,11 @@ use crate::{
     utils::{
         arc_str_serde, arc_str_vec_serde, default_as_true, default_probe_delay_secs, default_probe_live_interval,
         default_resolve_background, default_resolve_delay_secs, default_xtream_live_stream_use_prefix,
-        deserialize_timestamp, get_credentials_from_url_str, get_trimmed_string, is_blank_optional_string,
-        is_default_probe_delay_secs, is_default_probe_live_interval, is_default_resolve_delay_secs, is_false,
-        is_non_blank_optional_string, is_true, is_zero_i16, is_zero_u16, parse_duration_seconds,
-        parse_provider_scheme_url_parts, sanitize_sensitive_info, serialize_option_vec_flow_map_items, trim_last_slash,
-        Internable, BATCH_SCHEME_PREFIX, PROVIDER_SCHEME_PREFIX,
+        deserialize_as_option_string, deserialize_timestamp, get_credentials_from_url_str, get_trimmed_string,
+        is_blank_optional_string, is_default_probe_delay_secs, is_default_probe_live_interval,
+        is_default_resolve_delay_secs, is_false, is_non_blank_optional_string, is_true, is_zero_i16, is_zero_u16,
+        parse_duration_seconds, parse_provider_scheme_url_parts, sanitize_sensitive_info,
+        serialize_option_vec_flow_map_items, trim_last_slash, Internable, BATCH_SCHEME_PREFIX, PROVIDER_SCHEME_PREFIX,
     },
 };
 use enum_iterator::Sequence;
@@ -475,9 +475,17 @@ pub enum MediaServerLibraryKindDto {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct MediaServerLibrarySelectorDetailsDto {
-    #[serde(default, skip_serializing_if = "is_blank_optional_string")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_as_option_string",
+        skip_serializing_if = "is_blank_optional_string"
+    )]
     pub id: Option<String>,
-    #[serde(default, skip_serializing_if = "is_blank_optional_string")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_as_option_string",
+        skip_serializing_if = "is_blank_optional_string"
+    )]
     pub key: Option<String>,
     #[serde(default, skip_serializing_if = "is_blank_optional_string")]
     pub name: Option<String>,
@@ -1499,6 +1507,22 @@ mod tests {
         assert!(!media_server.playback.preflight_streams);
         assert_eq!(media_server.image_policy, MediaServerImagePolicyDto::ProxyOnDemand);
         assert!(!media_server.allow_relay);
+    }
+
+    #[test]
+    fn media_server_library_key_selector_accepts_numeric_yaml_scalars() {
+        let media_server =
+            serde_json::from_str::<MediaServerInputConfigDto>(r#"{"libraries":[{"key":10,"kind":"movies"}]}"#)
+                .expect("numeric YAML-like key selectors should deserialize as strings");
+
+        assert_eq!(
+            media_server.libraries,
+            vec![MediaServerLibrarySelectorDto::Detailed(MediaServerLibrarySelectorDetailsDto {
+                key: Some("10".to_string()),
+                kind: Some(MediaServerLibraryKindDto::Movies),
+                ..MediaServerLibrarySelectorDetailsDto::default()
+            })]
+        );
     }
 
     #[test]
