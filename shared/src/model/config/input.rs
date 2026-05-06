@@ -553,8 +553,6 @@ pub struct MediaServerInputConfigDto {
     #[serde(default, skip_serializing_if = "is_blank_optional_string")]
     pub server_id: Option<String>,
     #[serde(default, skip_serializing_if = "is_blank_optional_string")]
-    pub machine_id: Option<String>,
-    #[serde(default, skip_serializing_if = "is_blank_optional_string")]
     pub server_name: Option<String>,
     #[serde(default = "default_as_true", skip_serializing_if = "is_true")]
     pub prefer_https: bool,
@@ -574,7 +572,6 @@ impl Default for MediaServerInputConfigDto {
             user_id: None,
             account_token: None,
             server_id: None,
-            machine_id: None,
             server_name: None,
             prefer_https: default_as_true(),
             allow_relay: false,
@@ -589,7 +586,6 @@ impl MediaServerInputConfigDto {
         self.user_id = get_trimmed_string(self.user_id.as_deref());
         self.account_token = get_trimmed_string(self.account_token.as_deref());
         self.server_id = get_trimmed_string(self.server_id.as_deref());
-        self.machine_id = get_trimmed_string(self.machine_id.as_deref());
         self.server_name = get_trimmed_string(self.server_name.as_deref());
 
         for library in &mut self.libraries {
@@ -618,9 +614,7 @@ impl MediaServerInputConfigDto {
     }
 
     pub fn has_plex_server_selector(&self) -> bool {
-        is_non_blank_optional_string(&self.server_id)
-            || is_non_blank_optional_string(&self.machine_id)
-            || is_non_blank_optional_string(&self.server_name)
+        is_non_blank_optional_string(&self.server_id) || is_non_blank_optional_string(&self.server_name)
     }
 }
 
@@ -968,7 +962,7 @@ impl ConfigInputDto {
                 }
                 if trimmed_url.is_empty() && !media_server.has_plex_server_selector() {
                     return Err(TuliproxError::ConfigInput(format!(
-                        "media-server input type plex requires a server selector such as media_server.machine_id, media_server.server_id, or media_server.server_name when input.url is omitted (input: {})",
+                        "media-server input type plex requires a server selector such as media_server.server_id or media_server.server_name when input.url is omitted (input: {})",
                         self.name
                     )));
                 }
@@ -1653,7 +1647,7 @@ mod tests {
             name: "plex_media_server".intern(),
             input_type: InputType::Plex,
             media_server: Some(MediaServerInputConfigDto {
-                machine_id: Some("machine".to_string()),
+                server_id: Some("server".to_string()),
                 ..media_server_config_with_library()
             }),
             ..ConfigInputDto::default()
@@ -1681,7 +1675,7 @@ mod tests {
             input_type: InputType::Plex,
             media_server: Some(MediaServerInputConfigDto {
                 account_token: Some("token".to_string()),
-                machine_id: Some("machine".to_string()),
+                server_id: Some("server".to_string()),
                 ..media_server_config_with_library()
             }),
             ..ConfigInputDto::default()
