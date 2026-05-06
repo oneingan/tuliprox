@@ -109,7 +109,11 @@ mod tests {
             }),
             ..VideoStreamProperties::default()
         };
-        let patch = MediaFactPatch { tmdb_id: Some(999), release_date: Some("2000-01-01".to_string()) };
+        let patch = MediaFactPatch {
+            tmdb_id: Some(999),
+            release_date: Some("2000-01-01".to_string()),
+            ..MediaFactPatch::default()
+        };
 
         assert!(!apply_fact_patch_to_video(&mut properties, &patch));
         assert_eq!(properties.tmdb, Some(603));
@@ -133,7 +137,11 @@ mod tests {
     #[test]
     fn applies_video_patch_to_missing_facts() {
         let mut properties = VideoStreamProperties::default();
-        let patch = MediaFactPatch { tmdb_id: Some(603), release_date: Some("1999-01-01".to_string()) };
+        let patch = MediaFactPatch {
+            tmdb_id: Some(603),
+            release_date: Some("1999-01-01".to_string()),
+            ..MediaFactPatch::default()
+        };
 
         assert!(apply_fact_patch_to_video(&mut properties, &patch));
         assert_eq!(properties.tmdb, Some(603));
@@ -150,7 +158,11 @@ mod tests {
             release_date: Some("2008-01-20".into()),
             ..SeriesStreamProperties::default()
         };
-        let patch = MediaFactPatch { tmdb_id: Some(999), release_date: Some("2009-01-01".to_string()) };
+        let patch = MediaFactPatch {
+            tmdb_id: Some(999),
+            release_date: Some("2009-01-01".to_string()),
+            ..MediaFactPatch::default()
+        };
 
         assert!(!apply_fact_patch_to_series(&mut properties, &patch));
         assert_eq!(properties.tmdb, Some(1396));
@@ -171,7 +183,11 @@ mod tests {
     #[test]
     fn applies_series_patch_to_missing_facts() {
         let mut properties = SeriesStreamProperties::default();
-        let patch = MediaFactPatch { tmdb_id: Some(1396), release_date: Some("2008-01-01".to_string()) };
+        let patch = MediaFactPatch {
+            tmdb_id: Some(1396),
+            release_date: Some("2008-01-01".to_string()),
+            ..MediaFactPatch::default()
+        };
 
         assert!(apply_fact_patch_to_series(&mut properties, &patch));
         assert_eq!(properties.tmdb, Some(1396));

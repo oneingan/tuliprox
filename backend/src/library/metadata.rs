@@ -257,6 +257,20 @@ impl MediaMetadata {
         }
     }
 
+    pub fn poster_url(&self) -> Option<&str> {
+        match self {
+            MediaMetadata::Movie(m) => m.poster.as_deref(),
+            MediaMetadata::Series(s) => s.poster.as_deref(),
+        }
+    }
+
+    pub fn backdrop_url(&self) -> Option<&str> {
+        match self {
+            MediaMetadata::Movie(m) => m.fanart.as_deref(),
+            MediaMetadata::Series(s) => s.fanart.as_deref(),
+        }
+    }
+
     pub fn source(&self) -> &MetadataSource {
         match self {
             MediaMetadata::Movie(m) => &m.source,
