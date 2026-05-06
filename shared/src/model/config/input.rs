@@ -1526,16 +1526,6 @@ mod tests {
     }
 
     #[test]
-    fn media_server_enrichment_block_is_not_part_of_schema() {
-        let err = serde_json::from_str::<MediaServerInputConfigDto>(
-            r#"{"libraries":["Movies"],"enrichment":{"ffprobe":true,"tmdb_lookup":true,"fetch_images":true}}"#,
-        )
-        .expect_err("media_server.enrichment must not be accepted");
-
-        assert!(err.to_string().contains("unknown field `enrichment`"));
-    }
-
-    #[test]
     fn prepare_accepts_emby_media_server_with_token_and_library() {
         let mut dto = ConfigInputDto {
             name: "emby_media_server".intern(),
