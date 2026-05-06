@@ -44,17 +44,34 @@ pub fn apply_tmdb_artwork_metadata_to_media_server_playlist_item(
     item: &mut PlaylistItem,
     metadata: &MediaMetadata,
 ) -> bool {
-    match item.header.additional_properties.as_mut() {
+    let mut header_logo_patch: Option<String> = None;
+    let mut changed = match item.header.additional_properties.as_mut() {
         Some(StreamProperties::Video(video)) => {
             let patch = video_fact_patch_from_metadata(video, metadata);
+            header_logo_patch.clone_from(&patch.artwork.poster_url);
             apply_artwork_patch_to_video(video, &patch)
         }
         Some(StreamProperties::Series(series)) if item.header.item_type == PlaylistItemType::SeriesInfo => {
             let patch = series_fact_patch_from_metadata(series, metadata);
+            header_logo_patch.clone_from(&patch.artwork.poster_url);
             apply_artwork_patch_to_series(series, &patch)
         }
         _ => false,
+    };
+
+    if let Some(poster_url) = header_logo_patch.as_deref() {
+        changed |= set_missing_header_logo(item, poster_url);
     }
+
+    changed
+}
+
+fn set_missing_header_logo(item: &mut PlaylistItem, poster_url: &str) -> bool {
+    if item.header.logo.trim().is_empty() {
+        item.header.logo = poster_url.into();
+        return true;
+    }
+    false
 }
 
 fn media_server_tmdb_artwork_resolver(app_config: &AppConfig, client: &reqwest::Client) -> Option<MetadataResolver> {
@@ -124,6 +141,7 @@ mod tests {
             panic!("expected video properties");
         };
         assert_eq!(video.stream_icon.as_ref(), "https://image.example/movie-poster.jpg");
+        assert_eq!(item.header.logo.as_ref(), "https://image.example/movie-poster.jpg");
         let details = video.details.as_ref().expect("details are created for movie artwork");
         assert_eq!(details.cover_big.as_deref(), Some("https://image.example/movie-poster.jpg"));
         assert_eq!(details.movie_image.as_deref(), Some("https://image.example/movie-poster.jpg"));
@@ -161,6 +179,7 @@ mod tests {
             panic!("expected series properties");
         };
         assert_eq!(series.cover.as_ref(), "https://image.example/series-poster.jpg");
+        assert_eq!(item.header.logo.as_ref(), "https://image.example/series-poster.jpg");
         assert_eq!(
             series.backdrop_path.as_ref().and_then(|values| values.first()).map(std::sync::Arc::as_ref),
             Some("https://image.example/series-backdrop.jpg")
