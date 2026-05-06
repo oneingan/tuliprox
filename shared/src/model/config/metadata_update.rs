@@ -437,6 +437,8 @@ impl FfprobeConfigDto {
 pub struct TmdbConfigDto {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub artwork: bool,
     #[serde(default = "default_tmdb_api_key", skip_serializing_if = "is_tmdb_default_api_key")]
     pub api_key: Option<String>,
     #[serde(default = "default_tmdb_rate_limit_ms", skip_serializing_if = "is_default_tmdb_rate_limit_ms")]
@@ -455,6 +457,7 @@ impl Default for TmdbConfigDto {
     fn default() -> Self {
         Self {
             enabled: false,
+            artwork: false,
             api_key: default_tmdb_api_key(),
             rate_limit_ms: default_tmdb_rate_limit_ms(),
             cache_duration_days: default_tmdb_cache_duration_days(),
@@ -468,6 +471,7 @@ impl Default for TmdbConfigDto {
 impl TmdbConfigDto {
     pub fn is_empty(&self) -> bool {
         !self.enabled
+            && !self.artwork
             && self.api_key.as_ref().is_none_or(|api_key| api_key == TMDB_API_KEY)
             && self.rate_limit_ms == default_tmdb_rate_limit_ms()
             && self.cache_duration_days == default_tmdb_cache_duration_days()

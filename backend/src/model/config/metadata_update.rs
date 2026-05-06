@@ -74,6 +74,7 @@ pub struct FfprobeConfig {
 #[derive(Debug, Clone)]
 pub struct TmdbConfig {
     pub enabled: bool,
+    pub artwork: bool,
     pub api_key: Option<String>,
     pub rate_limit_ms: u64,
     pub cache_duration_days: u32,
@@ -88,6 +89,7 @@ impl Default for TmdbConfig {
         let cooldown = default_metadata_tmdb_cooldown();
         Self {
             enabled: false,
+            artwork: false,
             api_key: None,
             rate_limit_ms: default_tmdb_rate_limit_ms(),
             cache_duration_days: default_tmdb_cache_duration_days(),
@@ -337,6 +339,7 @@ impl From<&TmdbConfigDto> for TmdbConfig {
     fn from(dto: &TmdbConfigDto) -> Self {
         Self {
             enabled: dto.enabled,
+            artwork: dto.artwork,
             api_key: dto.api_key.clone(),
             rate_limit_ms: dto.rate_limit_ms,
             cache_duration_days: dto.cache_duration_days,
@@ -352,6 +355,7 @@ impl From<&TmdbConfig> for TmdbConfigDto {
     fn from(instance: &TmdbConfig) -> Self {
         Self {
             enabled: instance.enabled,
+            artwork: instance.artwork,
             api_key: instance.api_key.clone(),
             rate_limit_ms: instance.rate_limit_ms,
             cache_duration_days: instance.cache_duration_days,

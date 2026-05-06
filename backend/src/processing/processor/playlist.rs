@@ -9,8 +9,8 @@ use crate::{
     },
     messaging::send_message,
     media_server::{
-        media_server_catalog_snapshot_to_playlist, refresh_media_server_catalog_complete_before_publish,
-        MediaServerCatalogRefreshPolicy, MediaServerHttpClient,
+        enrich_media_server_playlist_with_tmdb_artwork, media_server_catalog_snapshot_to_playlist,
+        refresh_media_server_catalog_complete_before_publish, MediaServerCatalogRefreshPolicy, MediaServerHttpClient,
     },
     media_server::plex::client::PlexCatalogClient,
     model::{
@@ -368,6 +368,7 @@ fn hybrid_has_m3u_staged_cluster(input: &ConfigInput, skip_cluster: &[XtreamClus
 }
 
 async fn download_plex_media_server_playlist(
+    app_config: &AppConfig,
     client: &reqwest::Client,
     input: &ConfigInput,
 ) -> (Vec<PlaylistGroup>, Vec<TuliproxError>) {
@@ -388,7 +389,11 @@ async fn download_plex_media_server_playlist(
     let policy = MediaServerCatalogRefreshPolicy { page_size: usize::from(media_server.catalog.page_size) };
 
     match refresh_media_server_catalog_complete_before_publish(&plex_client, policy).await {
-        Ok(snapshot) => (media_server_catalog_snapshot_to_playlist(&snapshot), vec![]),
+        Ok(snapshot) => {
+            let mut playlist = media_server_catalog_snapshot_to_playlist(&snapshot);
+            enrich_media_server_playlist_with_tmdb_artwork(app_config, client, &mut playlist).await;
+            (playlist, vec![])
+        }
         Err(error) => (vec![], vec![TuliproxError::Download(error.to_string())]),
     }
 }
@@ -539,7 +544,7 @@ async fn playlist_download_from_input(
                 (p, e, false, 0, 0)
             }
             InputType::Plex => {
-                let (p, e) = download_plex_media_server_playlist(client, input).await;
+                let (p, e) = download_plex_media_server_playlist(app_config, client, input).await;
                 (p, e, false, 0, 0)
             }
             InputType::Emby | InputType::Jellyfin => (
