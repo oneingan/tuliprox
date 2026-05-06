@@ -1517,6 +1517,17 @@ mod tests {
                 ..MediaServerLibrarySelectorDetailsDto::default()
             })]
         );
+
+        let by_id = serde_json::from_str::<MediaServerInputConfigDto>(r#"{"libraries":[{"id":42,"kind":"tvshows"}]}"#)
+            .expect("numeric id selectors should deserialize as strings");
+        assert_eq!(
+            by_id.libraries,
+            vec![MediaServerLibrarySelectorDto::Detailed(MediaServerLibrarySelectorDetailsDto {
+                id: Some("42".to_string()),
+                kind: Some(MediaServerLibraryKindDto::TvShows),
+                ..MediaServerLibrarySelectorDetailsDto::default()
+            })]
+        );
     }
 
     #[test]
