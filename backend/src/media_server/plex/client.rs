@@ -16,7 +16,7 @@ use reqwest::{Method, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use shared::model::{InputType, MediaServerLibrarySelectorDto};
-use std::{fmt::Write as _, sync::Arc};
+use std::{collections::HashSet, fmt::Write as _, sync::Arc};
 use tokio::sync::Mutex;
 use url::Url;
 
@@ -514,30 +514,44 @@ fn select_libraries(
     sections: &[PlexSectionDto],
 ) -> Result<Vec<MediaServerLibrary>, MediaServerError> {
     let mut libraries = Vec::new();
+    let mut selected_keys = HashSet::new();
     for selector in &config.libraries {
         let matches = sections.iter().filter(|section| plex_section_matches_selector(section, selector)).collect::<Vec<_>>();
-        match matches.as_slice() {
-            [] => {
-                return Err(MediaServerError::new(MediaServerErrorKind::MediaServerLibraryUnavailable)
+        if matches.is_empty() {
+            return Err(MediaServerError::new(MediaServerErrorKind::MediaServerLibraryUnavailable)
+                .provider("plex")
+                .detail("selected Plex library was not visible"));
+        }
+        if matches.len() > 1 && !plex_selector_allows_multiple_libraries(selector) {
+            return Err(MediaServerError::new(MediaServerErrorKind::MediaServerLibraryUnavailable)
+                .provider("plex")
+                .detail("selected Plex library name was ambiguous"));
+        }
+        for section in matches {
+            let library = plex_section_to_library(&config.input_name, server_id, section).ok_or_else(|| {
+                MediaServerError::new(MediaServerErrorKind::MediaServerLibraryUnavailable)
                     .provider("plex")
-                    .detail("selected Plex library was not visible"));
-            }
-            [section] => {
-                let library = plex_section_to_library(&config.input_name, server_id, section).ok_or_else(|| {
-                    MediaServerError::new(MediaServerErrorKind::MediaServerLibraryUnavailable)
-                        .provider("plex")
-                        .detail("selected Plex library did not expose a stable key")
-                })?;
+                    .detail("selected Plex library did not expose a stable key")
+            })?;
+            if selected_keys.insert(library.reference.library_id.to_string()) {
                 libraries.push(library);
-            }
-            _ => {
-                return Err(MediaServerError::new(MediaServerErrorKind::MediaServerLibraryUnavailable)
-                    .provider("plex")
-                    .detail("selected Plex library name was ambiguous"));
             }
         }
     }
     Ok(libraries)
+}
+
+fn plex_selector_allows_multiple_libraries(selector: &MediaServerLibrarySelectorDto) -> bool {
+    match selector {
+        MediaServerLibrarySelectorDto::Name(_) => false,
+        MediaServerLibrarySelectorDto::Detailed(details) => {
+            details.kind.is_some()
+                && details.key.as_ref().is_none_or(|key| key.trim().is_empty())
+                && details.id.as_ref().is_none_or(|id| id.trim().is_empty())
+                && details.slug.as_ref().is_none_or(|slug| slug.trim().is_empty())
+                && details.name.as_ref().is_none_or(|name| name.trim().is_empty())
+        }
+    }
 }
 
 fn select_resource<'a>(
@@ -777,7 +791,7 @@ fn non_blank(value: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::media_server::plex::dto::{PlexConnectionDto, PlexResourceDto};
+    use crate::media_server::{plex::dto::{PlexConnectionDto, PlexResourceDto}, MediaServerLibraryKind};
     use bytes::Bytes;
     use futures::StreamExt;
     use http_body_util::Full;
@@ -972,6 +986,52 @@ mod tests {
         let libraries = select_libraries(&config, &"machine-redacted".into(), &sections).expect("stable key disambiguates");
 
         assert_eq!(libraries[0].reference.library_id.as_ref(), "2");
+    }
+
+    #[test]
+    fn selected_libraries_allow_slug_selector_with_kind_guard() {
+        let mut config = config();
+        config.libraries = vec![MediaServerLibrarySelectorDto::Detailed(MediaServerLibrarySelectorDetailsDto {
+            slug: Some("movies-a".to_string()),
+            kind: Some(shared::model::MediaServerLibraryKindDto::Movies),
+            ..MediaServerLibrarySelectorDetailsDto::default()
+        })];
+        let sections = vec![
+            PlexSectionDto { key: Some("1".to_string()), title: Some("Movies A".to_string()), section_type: Some("movie".to_string()) },
+            PlexSectionDto { key: Some("2".to_string()), title: Some("Movies A".to_string()), section_type: Some("show".to_string()) },
+        ];
+
+        let libraries = select_libraries(&config, &"machine-redacted".into(), &sections).expect("slug selector resolves");
+
+        assert_eq!(libraries.len(), 1);
+        assert_eq!(libraries[0].reference.library_id.as_ref(), "1");
+        assert_eq!(libraries[0].kind, MediaServerLibraryKind::Movies);
+    }
+
+    #[test]
+    fn selected_libraries_allow_kind_only_selectors_for_all_matching_sections() {
+        let mut config = config();
+        config.libraries = vec![
+            MediaServerLibrarySelectorDto::Detailed(MediaServerLibrarySelectorDetailsDto {
+                kind: Some(shared::model::MediaServerLibraryKindDto::Movies),
+                ..MediaServerLibrarySelectorDetailsDto::default()
+            }),
+            MediaServerLibrarySelectorDto::Detailed(MediaServerLibrarySelectorDetailsDto {
+                kind: Some(shared::model::MediaServerLibraryKindDto::TvShows),
+                ..MediaServerLibrarySelectorDetailsDto::default()
+            }),
+        ];
+        let sections = vec![
+            PlexSectionDto { key: Some("1".to_string()), title: Some("Movies A".to_string()), section_type: Some("movie".to_string()) },
+            PlexSectionDto { key: Some("2".to_string()), title: Some("Movies B".to_string()), section_type: Some("movie".to_string()) },
+            PlexSectionDto { key: Some("3".to_string()), title: Some("Shows A".to_string()), section_type: Some("show".to_string()) },
+            PlexSectionDto { key: Some("4".to_string()), title: Some("Music".to_string()), section_type: Some("artist".to_string()) },
+        ];
+
+        let libraries = select_libraries(&config, &"machine-redacted".into(), &sections).expect("kind selectors select all matching libraries");
+
+        assert_eq!(libraries.iter().map(|library| library.reference.library_id.as_ref()).collect::<Vec<_>>(), vec!["1", "2", "3"]);
+        assert!(libraries.iter().all(|library| !matches!(library.kind, MediaServerLibraryKind::Unsupported)));
     }
 
     #[test]

@@ -5,7 +5,10 @@ use crate::media_server::{
     MediaServerSeason, MediaServerSeries, MediaServerStreamRef, MediaServerTechnicalFacts,
     MediaServerVideoTechnicalFacts,
 };
-use shared::model::{MediaServerLibraryKindDto, MediaServerLibrarySelectorDto};
+use shared::{
+    model::{MediaServerLibraryKindDto, MediaServerLibrarySelectorDto},
+    utils::deunicode_string,
+};
 use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -32,10 +35,20 @@ pub fn plex_section_matches_selector(section: &PlexSectionDto, selector: &MediaS
     match selector {
         MediaServerLibrarySelectorDto::Name(name) => matches_trimmed(section.title.as_deref(), name),
         MediaServerLibrarySelectorDto::Detailed(details) => {
+            let has_identity = details.key.as_ref().is_some_and(|key| !key.trim().is_empty())
+                || details.id.as_ref().is_some_and(|id| !id.trim().is_empty())
+                || details.slug.as_ref().is_some_and(|slug| !slug.trim().is_empty())
+                || details.name.as_ref().is_some_and(|name| !name.trim().is_empty());
             let identity_matches = details.key.as_deref().is_some_and(|key| matches_trimmed(section.key.as_deref(), key))
                 || details.id.as_deref().is_some_and(|id| matches_trimmed(section.key.as_deref(), id))
+                || details.slug.as_deref().is_some_and(|slug| matches_section_slug(section.title.as_deref(), slug))
                 || details.name.as_deref().is_some_and(|name| matches_trimmed(section.title.as_deref(), name));
-            identity_matches && details.kind.is_none_or(|kind| plex_section_kind_matches(section.section_type.as_deref(), kind))
+            let kind_matches = details.kind.is_none_or(|kind| plex_section_kind_matches(section.section_type.as_deref(), kind));
+            if has_identity {
+                identity_matches && kind_matches
+            } else {
+                kind_matches
+            }
         }
     }
 }
@@ -169,6 +182,29 @@ fn plex_library_kind(section_type: Option<&str>) -> MediaServerLibraryKind {
 
 fn matches_trimmed(candidate: Option<&str>, expected: &str) -> bool {
     candidate.is_some_and(|candidate| candidate.trim() == expected.trim())
+}
+
+fn matches_section_slug(title: Option<&str>, expected_slug: &str) -> bool {
+    title.is_some_and(|title| plex_library_title_slug(title) == normalize_library_slug(expected_slug))
+}
+
+fn plex_library_title_slug(title: &str) -> String { normalize_library_slug(deunicode_string(title).as_ref()) }
+
+fn normalize_library_slug(value: &str) -> String {
+    let mut slug = String::with_capacity(value.len());
+    let mut pending_separator = false;
+    for ch in value.trim().chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_alphanumeric() {
+            if pending_separator && !slug.is_empty() {
+                slug.push('-');
+            }
+            slug.push(ch);
+            pending_separator = false;
+        } else {
+            pending_separator = true;
+        }
+    }
+    slug
 }
 
 fn first_media(media: &[PlexMediaDto]) -> Option<&PlexMediaDto> {

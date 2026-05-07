@@ -487,6 +487,12 @@ pub struct MediaServerLibrarySelectorDetailsDto {
         skip_serializing_if = "is_blank_optional_string"
     )]
     pub key: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_as_option_string",
+        skip_serializing_if = "is_blank_optional_string"
+    )]
+    pub slug: Option<String>,
     #[serde(default, skip_serializing_if = "is_blank_optional_string")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -497,12 +503,14 @@ impl MediaServerLibrarySelectorDetailsDto {
     fn prepare(&mut self) {
         self.id = get_trimmed_string(self.id.as_deref());
         self.key = get_trimmed_string(self.key.as_deref());
+        self.slug = get_trimmed_string(self.slug.as_deref());
         self.name = get_trimmed_string(self.name.as_deref());
     }
 
     fn is_empty(&self) -> bool {
         self.id.as_ref().is_none_or(|s| s.trim().is_empty())
             && self.key.as_ref().is_none_or(|s| s.trim().is_empty())
+            && self.slug.as_ref().is_none_or(|s| s.trim().is_empty())
             && self.name.as_ref().is_none_or(|s| s.trim().is_empty())
             && self.kind.is_none()
     }
@@ -1504,7 +1512,7 @@ mod tests {
     }
 
     #[test]
-    fn media_server_library_key_selector_accepts_numeric_yaml_scalars() {
+    fn media_server_library_identity_selectors_accept_numeric_yaml_scalars() {
         let media_server =
             serde_json::from_str::<MediaServerInputConfigDto>(r#"{"libraries":[{"key":10,"kind":"movies"}]}"#)
                 .expect("numeric YAML-like key selectors should deserialize as strings");
@@ -1525,6 +1533,18 @@ mod tests {
             vec![MediaServerLibrarySelectorDto::Detailed(MediaServerLibrarySelectorDetailsDto {
                 id: Some("42".to_string()),
                 kind: Some(MediaServerLibraryKindDto::TvShows),
+                ..MediaServerLibrarySelectorDetailsDto::default()
+            })]
+        );
+
+        let by_slug =
+            serde_json::from_str::<MediaServerInputConfigDto>(r#"{"libraries":[{"slug":123,"kind":"movies"}]}"#)
+                .expect("numeric slug selectors should deserialize as strings");
+        assert_eq!(
+            by_slug.libraries,
+            vec![MediaServerLibrarySelectorDto::Detailed(MediaServerLibrarySelectorDetailsDto {
+                slug: Some("123".to_string()),
+                kind: Some(MediaServerLibraryKindDto::Movies),
                 ..MediaServerLibrarySelectorDetailsDto::default()
             })]
         );
