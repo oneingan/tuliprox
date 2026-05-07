@@ -24,6 +24,7 @@ use crate::{
         },
     },
     auth::{verify_access_token, Fingerprint},
+    media_server::playback::is_media_server_image_ref_url,
     model::{
         xtream_mapping_option_from_target_options, Config, ConfigInput, ConfigInputFlags, ConfigTarget, InputSource,
         ProxyUserCredentials,
@@ -761,7 +762,9 @@ async fn xtream_player_api_resource(
     match stream_url {
         None => axum::http::StatusCode::NOT_FOUND.into_response(),
         Some(url) => {
-            if user.proxy.is_redirect(pli.item_type) || target.is_force_redirect(pli.item_type) {
+            if (user.proxy.is_redirect(pli.item_type) || target.is_force_redirect(pli.item_type))
+                && !is_media_server_image_ref_url(&url)
+            {
                 trace_if_enabled!("Redirecting resource request to {}", sanitize_sensitive_info(&url));
                 redirect(&url).into_response()
             } else {

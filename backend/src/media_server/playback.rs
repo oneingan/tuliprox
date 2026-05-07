@@ -6,7 +6,8 @@ use bytes::Bytes;
 use futures::{stream, StreamExt};
 use reqwest::{
     header::{
-        HeaderMap, ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG, LAST_MODIFIED,
+        HeaderMap, ACCEPT_RANGES, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG, EXPIRES,
+        LAST_MODIFIED,
     },
     StatusCode,
 };
@@ -42,7 +43,12 @@ pub fn classify_playback_origin(
     input_name: &Arc<str>,
     item_url: &str,
 ) -> Result<PlaybackOrigin, MediaServerError> {
-    if input_type.is_media_server() || item_url.starts_with("media-server://") {
+    if is_media_server_image_ref_url(item_url) {
+        return Err(MediaServerError::new(MediaServerErrorKind::MediaServerStreamOpenFailed)
+            .detail("media server image refs cannot be used as playback URLs"));
+    }
+
+    if input_type.is_media_server() || is_media_server_stream_ref_url(item_url) {
         return parse_media_server_stream_ref(input_name, item_url).map(PlaybackOrigin::MediaServer);
     }
 
@@ -98,13 +104,28 @@ fn single_chunk_stream(body: Bytes) -> BoxedMediaServerStream {
 
 pub fn safe_media_server_response_headers(headers: &HeaderMap) -> HeaderMap {
     let mut safe = HeaderMap::new();
-    for name in [CONTENT_TYPE, CONTENT_LENGTH, CONTENT_RANGE, ACCEPT_RANGES, ETAG, LAST_MODIFIED] {
+    for name in [
+        CONTENT_TYPE,
+        CONTENT_LENGTH,
+        CONTENT_RANGE,
+        ACCEPT_RANGES,
+        ETAG,
+        LAST_MODIFIED,
+        CACHE_CONTROL,
+        EXPIRES,
+    ] {
         if let Some(value) = headers.get(&name) {
             safe.insert(name, value.clone());
         }
     }
     safe
 }
+
+pub fn is_media_server_stream_ref_url(item_url: &str) -> bool {
+    item_url.starts_with("media-server://") && !is_media_server_image_ref_url(item_url)
+}
+
+pub fn is_media_server_image_ref_url(item_url: &str) -> bool { item_url.starts_with("media-server://image/") }
 
 pub fn parse_media_server_stream_ref(input_name: &Arc<str>, item_url: &str) -> Result<MediaServerStreamRef, MediaServerError> {
     let Some(rest) = item_url.strip_prefix("media-server://") else {
@@ -148,6 +169,53 @@ pub fn parse_media_server_stream_ref(input_name: &Arc<str>, item_url: &str) -> R
         }),
         _ => Err(MediaServerError::new(MediaServerErrorKind::MediaServerStreamOpenFailed)
             .detail("unsupported media server URL scheme")),
+    }
+}
+
+pub fn parse_media_server_image_ref(item_url: &str) -> Result<MediaServerImageRef, MediaServerError> {
+    let Some(rest) = item_url.strip_prefix("media-server://image/") else {
+        return Err(MediaServerError::new(MediaServerErrorKind::MediaServerStreamOpenFailed)
+            .detail("resource is not a media server image URL"));
+    };
+    let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let parts: Vec<String> = path.split('/').map(unescape_internal_url_component).collect();
+    if parts.len() < 4 {
+        return Err(MediaServerError::new(MediaServerErrorKind::MediaServerStreamOpenFailed)
+            .detail("media server image URL is missing required path parts"));
+    }
+
+    match parts[0].as_str() {
+        "emby" => Ok(MediaServerImageRef::Emby {
+            input_name: Arc::<str>::from(parts[1].as_str()),
+            server_id: Arc::<str>::from(parts[2].as_str()),
+            item_id: Arc::<str>::from(parts[3].as_str()),
+            image_kind: query_value(query, "image_kind").map(Arc::<str>::from).ok_or_else(|| {
+                MediaServerError::new(MediaServerErrorKind::MediaServerStreamOpenFailed)
+                    .detail("emby media-server image URL is missing image_kind")
+            })?,
+            tag: query_value(query, "tag").map(Arc::<str>::from),
+        }),
+        "jellyfin" => Ok(MediaServerImageRef::Jellyfin {
+            input_name: Arc::<str>::from(parts[1].as_str()),
+            server_id: Arc::<str>::from(parts[2].as_str()),
+            item_id: Arc::<str>::from(parts[3].as_str()),
+            image_kind: query_value(query, "image_kind").map(Arc::<str>::from).ok_or_else(|| {
+                MediaServerError::new(MediaServerErrorKind::MediaServerStreamOpenFailed)
+                    .detail("jellyfin media-server image URL is missing image_kind")
+            })?,
+            tag: query_value(query, "tag").map(Arc::<str>::from),
+        }),
+        "plex" => Ok(MediaServerImageRef::Plex {
+            input_name: Arc::<str>::from(parts[1].as_str()),
+            server_id: Arc::<str>::from(parts[2].as_str()),
+            rating_key: Arc::<str>::from(parts[3].as_str()),
+            image_path: query_value(query, "image_path").map(Arc::<str>::from).ok_or_else(|| {
+                MediaServerError::new(MediaServerErrorKind::MediaServerStreamOpenFailed)
+                    .detail("plex media-server image URL is missing image_path")
+            })?,
+        }),
+        _ => Err(MediaServerError::new(MediaServerErrorKind::MediaServerStreamOpenFailed)
+            .detail("unsupported media server image URL scheme")),
     }
 }
 
@@ -327,6 +395,26 @@ mod tests {
         let provider = classify_playback_origin(InputType::M3u, PlaylistItemType::Live, &input_name, "http://example.invalid/live")
             .expect("provider classifies");
         assert_eq!(provider, PlaybackOrigin::Provider);
+    }
+
+    #[test]
+    fn parses_media_server_image_refs_separately_from_stream_refs() {
+        let image_url = "media-server://image/plex/media_server/server%2Fone/rating%3Fkey?image_path=%2Flibrary%2Fmetadata%2Frating%2Fthumb%2F1";
+
+        assert!(is_media_server_image_ref_url(image_url));
+        assert!(!is_media_server_stream_ref_url(image_url));
+        let parsed = parse_media_server_image_ref(image_url).expect("image ref parses");
+
+        assert_eq!(
+            parsed,
+            MediaServerImageRef::Plex {
+                input_name: "media_server".into(),
+                server_id: "server/one".into(),
+                rating_key: "rating?key".into(),
+                image_path: "/library/metadata/rating/thumb/1".into(),
+            }
+        );
+        assert!(parse_media_server_stream_ref(&"media_server".into(), image_url).is_err());
     }
 
     #[tokio::test]

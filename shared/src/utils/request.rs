@@ -35,7 +35,29 @@ pub fn sanitize_sensitive_info(query: &str) -> Cow<'_, str> {
     ] {
         result = re.replace_all(&result, *replacement).into_owned();
     }
+    if result.contains("media-server://") {
+        result = redact_media_server_refs(&result);
+    }
     Cow::Owned(result)
+}
+
+fn redact_media_server_refs(value: &str) -> String {
+    const PREFIX: &str = "media-server://";
+    let mut result = String::with_capacity(value.len());
+    let mut rest = value;
+
+    while let Some(index) = rest.find(PREFIX) {
+        result.push_str(&rest[..index]);
+        result.push_str("media-server://<redacted>");
+        let after_prefix = &rest[index + PREFIX.len()..];
+        let end = after_prefix
+            .find(|ch: char| ch.is_whitespace() || matches!(ch, '"' | '\'' | '<' | '>' | ')' | '(' | ','))
+            .unwrap_or(after_prefix.len());
+        rest = &after_prefix[end..];
+    }
+
+    result.push_str(rest);
+    result
 }
 
 /// Extracts the file extension from a URL path (fragment stripped).
@@ -178,4 +200,18 @@ pub fn parse_provider_scheme_url_parts(stream_url: &str) -> Result<(&str, &str),
     }
 
     Ok((host, path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_sensitive_info_redacts_media_server_internal_refs() {
+        let sanitized = redact_media_server_refs(
+            "resource media-server://image/plex/input/server/rating?image_path=%2Flibrary%2Fmetadata%2Frating%2Fthumb%2F1 done",
+        );
+
+        assert_eq!(sanitized, "resource media-server://<redacted> done");
+    }
 }

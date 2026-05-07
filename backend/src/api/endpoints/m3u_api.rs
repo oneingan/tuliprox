@@ -17,6 +17,7 @@ use crate::{
         model::{AppState, UserApiRequest, UserApiRequestQueryOrBody},
     },
     auth::Fingerprint,
+    media_server::playback::is_media_server_image_ref_url,
     model::{ConfigTarget, ProxyUserCredentials},
     repository::{m3u_get_item_for_stream_id, m3u_load_rewrite_playlist, storage_const},
     utils::debug_if_enabled,
@@ -432,7 +433,9 @@ async fn m3u_api_resource(
     match stream_url {
         None => axum::http::StatusCode::NOT_FOUND.into_response(),
         Some(url) => {
-            if user.proxy.is_redirect(m3u_item.item_type) || target.is_force_redirect(m3u_item.item_type) {
+            if (user.proxy.is_redirect(m3u_item.item_type) || target.is_force_redirect(m3u_item.item_type))
+                && !is_media_server_image_ref_url(&url)
+            {
                 debug!("Redirecting stream request to {}", sanitize_sensitive_info(&url));
                 redirect(&url).into_response()
             } else {

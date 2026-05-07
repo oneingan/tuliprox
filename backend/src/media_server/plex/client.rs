@@ -377,10 +377,65 @@ impl MediaServerCatalogClient for PlexCatalogClient {
         Ok(MediaServerStreamResponse { status, headers, body })
     }
 
-    async fn open_image(&self, _image_ref: &MediaServerImageRef) -> Result<MediaServerResourceResponse, MediaServerError> {
-        Err(MediaServerError::new(MediaServerErrorKind::MediaServerStreamOpenFailed)
+    async fn open_image(&self, image_ref: &MediaServerImageRef) -> Result<MediaServerResourceResponse, MediaServerError> {
+        let MediaServerImageRef::Plex {
+            input_name,
+            server_id,
+            rating_key,
+            image_path,
+        } = image_ref else {
+            return Err(MediaServerError::new(MediaServerErrorKind::MediaServerStreamOpenFailed)
+                .provider("plex")
+                .detail("Plex image open received a non-Plex image ref"));
+        };
+        if input_name.as_ref() != self.config.input_name.as_ref() {
+            return Err(MediaServerError::new(MediaServerErrorKind::MediaServerItemNotFound)
+                .provider("plex")
+                .detail("Plex image ref did not belong to the selected input"));
+        }
+        if non_blank(rating_key.as_ref()).is_none() {
+            return Err(MediaServerError::new(MediaServerErrorKind::MediaServerItemNotFound)
+                .provider("plex")
+                .detail("Plex image ref is missing a stable rating key"));
+        }
+
+        let connection = self.connection().await?;
+        if server_id.as_ref() != connection.status.server_id.as_ref() {
+            return Err(MediaServerError::new(MediaServerErrorKind::MediaServerItemNotFound)
+                .provider("plex")
+                .detail("Plex image ref did not belong to the selected server"));
+        }
+
+        let url = pms_image_url(&connection.base_url, image_path)?;
+        let token = HeaderValue::from_str(connection.token.as_ref()).map_err(|_| {
+            MediaServerError::new(MediaServerErrorKind::MediaServerAuthDenied)
+                .provider("plex")
+                .detail("Plex token contains invalid header characters")
+        })?;
+        let response = self
+            .http
+            .request(Method::GET, &url)
+            .playback_errors()
+            .header(X_PLEX_TOKEN, token)
+            .send_with_error_detail("Plex image request failed")
+            .await?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(PlexOperation::Playback
+                .status_error(status)
+                .detail(format!("Plex image request returned {status}")));
+        }
+        let headers = response.headers().clone();
+        let body = response.bytes().await.map_err(|err| {
+            MediaServerError::from_reqwest_error_with_fallback(
+                &err,
+                PlexOperation::Playback.not_found_kind(),
+                PlexOperation::Playback.fallback_kind(),
+            )
             .provider("plex")
-            .detail("Plex image proxy is not part of the baseline catalog adapter"))
+            .detail("Plex image body read failed")
+        })?;
+        Ok(MediaServerResourceResponse { status, headers, body })
     }
 }
 
@@ -616,6 +671,41 @@ fn pms_url(base_url: &Arc<str>, path: &str) -> Result<String, MediaServerError> 
     Ok(url.to_string())
 }
 
+fn pms_image_url(base_url: &Arc<str>, image_path: &str) -> Result<String, MediaServerError> {
+    let image_path = non_blank(image_path).ok_or_else(|| {
+        MediaServerError::new(MediaServerErrorKind::MediaServerStreamOpenFailed)
+            .provider("plex")
+            .detail("Plex image ref is missing image_path")
+    })?;
+    if !image_path.starts_with("/library/metadata/")
+        || image_path.starts_with("//")
+        || image_path.bytes().any(|byte| byte.is_ascii_control())
+    {
+        return Err(MediaServerError::new(MediaServerErrorKind::MediaServerStreamOpenFailed)
+            .provider("plex")
+            .detail("Plex image_path is not a supported metadata image resource"));
+    }
+
+    let base = Url::parse(base_url).map_err(|_| plex_invalid_pms_url())?;
+    let expected_origin = base.origin().ascii_serialization();
+    let url = base.join(image_path).map_err(|_| {
+        MediaServerError::new(MediaServerErrorKind::MediaServerStreamOpenFailed)
+            .provider("plex")
+            .detail("Plex image_path could not be resolved against the selected PMS")
+    })?;
+    if url.origin().ascii_serialization() != expected_origin || url.fragment().is_some() {
+        return Err(MediaServerError::new(MediaServerErrorKind::MediaServerStreamOpenFailed)
+            .provider("plex")
+            .detail("Plex image_path did not resolve to the selected PMS origin"));
+    }
+    if url.query_pairs().any(|(name, _)| is_sensitive_plex_part_query_name(&name)) {
+        return Err(MediaServerError::new(MediaServerErrorKind::MediaServerStreamOpenFailed)
+            .provider("plex")
+            .detail("Plex image_path must not carry credential query parameters"));
+    }
+    Ok(url.to_string())
+}
+
 fn pms_part_url(base_url: &Arc<str>, part_key: &str) -> Result<String, MediaServerError> {
     let part_key = non_blank(part_key).ok_or_else(|| {
         MediaServerError::new(MediaServerErrorKind::NoDirectPlayableMediaServerSource)
@@ -711,6 +801,7 @@ mod tests {
     #[derive(Default)]
     struct PlexPlaybackServerState {
         stream_requests: AtomicUsize,
+        image_requests: AtomicUsize,
         last_range: TokioMutex<Option<String>>,
         last_uri: TokioMutex<Option<String>>,
     }
@@ -909,6 +1000,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn pms_image_url_accepts_only_same_origin_metadata_image_resources() {
+        let base = StdArc::<str>::from("http://127.0.0.1:32400/base");
+
+        assert_eq!(
+            pms_image_url(&base, "/library/metadata/rating-redacted/thumb/1").expect("image path resolves"),
+            "http://127.0.0.1:32400/library/metadata/rating-redacted/thumb/1"
+        );
+        assert_eq!(
+            pms_image_url(&base, "/library/parts/part-redacted/file.mkv")
+                .expect_err("part paths are not image refs")
+                .kind,
+            MediaServerErrorKind::MediaServerStreamOpenFailed
+        );
+        assert_eq!(
+            pms_image_url(&base, "//evil.example.invalid/library/metadata/rating-redacted/thumb/1")
+                .expect_err("network-path refs must not escape the selected PMS")
+                .kind,
+            MediaServerErrorKind::MediaServerStreamOpenFailed
+        );
+        assert_eq!(
+            pms_image_url(&base, "/library/metadata/rating-redacted/thumb/1?X-Plex-Token=should-not-leak")
+                .expect_err("image refs must not carry credentials")
+                .kind,
+            MediaServerErrorKind::MediaServerStreamOpenFailed
+        );
+    }
+
     fn plex_test_response(status: StatusCode, body: &'static [u8]) -> Response<Full<Bytes>> {
         Response::builder().status(status).body(Full::new(Bytes::from_static(body))).expect("response builds")
     }
@@ -968,6 +1087,18 @@ mod tests {
                     .body(Full::new(Bytes::from_static(b"data")))
                     .expect("response builds"))
             }
+            "/library/metadata/rating-redacted/thumb/1" => {
+                state.image_requests.fetch_add(1, Ordering::SeqCst);
+                *state.last_uri.lock().await = Some(req.uri().to_string());
+
+                Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header(http::header::CONTENT_TYPE, "image/jpeg")
+                    .header(http::header::CONTENT_LENGTH, "4")
+                    .header(http::header::ETAG, "image-etag")
+                    .body(Full::new(Bytes::from_static(b"jpeg")))
+                    .expect("response builds"))
+            }
             _ => Ok(plex_test_response(StatusCode::NOT_FOUND, b"")),
         }
     }
@@ -1023,6 +1154,40 @@ mod tests {
         assert_eq!(
             state.last_uri.lock().await.as_deref(),
             Some("/library/parts/part-redacted/file.mkv?download=1")
+        );
+        assert!(!state.last_uri.lock().await.as_deref().unwrap_or_default().contains(PLEX_TEST_TOKEN));
+        assert!(!state.last_uri.lock().await.as_deref().unwrap_or_default().contains("X-Plex-Token"));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn open_image_proxies_plex_metadata_image_with_token_header() {
+        let state = StdArc::new(PlexPlaybackServerState::default());
+        let (base_url, server) = start_plex_playback_server(StdArc::clone(&state)).await;
+        let media_server = plex_test_media_server_config();
+        let client = PlexCatalogClient::new(
+            "media_server".into(),
+            &base_url,
+            &media_server,
+            MediaServerHttpClient::new(reqwest::Client::new()),
+        );
+        let image_ref = MediaServerImageRef::Plex {
+            input_name: "media_server".into(),
+            server_id: "machine-redacted".into(),
+            rating_key: "rating-redacted".into(),
+            image_path: "/library/metadata/rating-redacted/thumb/1".into(),
+        };
+
+        let response = client.open_image(&image_ref).await.expect("Plex image opens");
+
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.headers.get(http::header::CONTENT_TYPE).and_then(|value| value.to_str().ok()), Some("image/jpeg"));
+        assert_eq!(response.body.as_ref(), b"jpeg");
+        assert_eq!(state.image_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            state.last_uri.lock().await.as_deref(),
+            Some("/library/metadata/rating-redacted/thumb/1")
         );
         assert!(!state.last_uri.lock().await.as_deref().unwrap_or_default().contains(PLEX_TEST_TOKEN));
         assert!(!state.last_uri.lock().await.as_deref().unwrap_or_default().contains("X-Plex-Token"));

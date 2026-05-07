@@ -11,9 +11,13 @@ use crate::{
     },
     auth::Fingerprint,
     media_server::{
-        playback::{media_server_stream_response as open_media_server_proxy_stream_response, parse_media_server_stream_ref},
+        playback::{
+            is_media_server_image_ref_url, media_server_stream_response as open_media_server_proxy_stream_response,
+            parse_media_server_image_ref, parse_media_server_stream_ref, safe_media_server_response_headers,
+        },
         plex::client::PlexCatalogClient,
-        MediaServerError, MediaServerErrorKind, MediaServerHttpClient,
+        MediaServerCatalogClient, MediaServerError, MediaServerErrorKind, MediaServerHttpClient, MediaServerImageRef,
+        MediaServerResourceResponse,
     },
     model::{ConfigInput, ConfigTarget, ProxyUserCredentials},
     utils::{
@@ -38,8 +42,8 @@ use serde::Serialize;
 use shared::{
     concat_string,
     model::{
-        Claims, InputFetchMethod, InputType, PlaylistEntry, PlaylistItemType, ProxyType, StreamChannel, StreamInfo, TargetType,
-        UserConnectionPermission, VirtualId, XtreamCluster,
+        Claims, InputFetchMethod, InputType, MediaServerImagePolicyDto, PlaylistEntry, PlaylistItemType, ProxyType,
+        StreamChannel, StreamInfo, TargetType, UserConnectionPermission, VirtualId, XtreamCluster,
     },
     utils::{
         bin_serialize, extract_extension_from_url, human_readable_kbps, is_sanitize_sensitive_info_enabled,
@@ -3132,6 +3136,156 @@ async fn fetch_resource_with_retry(
     Some(try_unwrap_body!(response_builder.body(axum::body::Body::from_stream(stream))))
 }
 
+fn media_server_image_ref_input_name(image_ref: &MediaServerImageRef) -> Arc<str> {
+    match image_ref {
+        MediaServerImageRef::Emby { input_name, .. }
+        | MediaServerImageRef::Jellyfin { input_name, .. }
+        | MediaServerImageRef::Plex { input_name, .. } => Arc::clone(input_name),
+    }
+}
+
+fn media_server_resource_error_status(error: &MediaServerError) -> StatusCode {
+    if let Some(status) = error.status {
+        return status;
+    }
+    match error.kind {
+        MediaServerErrorKind::MediaServerAuthDenied
+        | MediaServerErrorKind::MediaServerUnavailable
+        | MediaServerErrorKind::MediaServerDiscoveryFailed
+        | MediaServerErrorKind::MediaServerStreamOpenFailed
+        | MediaServerErrorKind::MediaServerCatalogDecodeFailed
+        | MediaServerErrorKind::MediaServerCatalogIncomplete
+        | MediaServerErrorKind::MediaServerCatalogPageStalled
+        | MediaServerErrorKind::MediaServerLibraryUnavailable
+        | MediaServerErrorKind::MediaServerLibraryTypeUnsupported => StatusCode::BAD_GATEWAY,
+        MediaServerErrorKind::MediaServerRateLimited => StatusCode::TOO_MANY_REQUESTS,
+        MediaServerErrorKind::MediaServerItemNotFound | MediaServerErrorKind::NoDirectPlayableMediaServerSource => {
+            StatusCode::NOT_FOUND
+        }
+    }
+}
+
+async fn add_complete_resource_bytes_to_cache(
+    app_state: &Arc<AppState>,
+    resource_url: &str,
+    mime_type: Option<String>,
+    body: Bytes,
+) {
+    let Some(cache) = app_state.cache.load().as_ref().cloned() else {
+        return;
+    };
+    let resource_path = {
+        let guard = cache.lock().await;
+        guard.store_path(resource_url, mime_type.as_deref())
+    };
+    let body_len = body.len();
+    if let Err(err) = tokio::fs::write(&resource_path, body).await {
+        warn!("Failed to write media-server resource cache file {}: {err}", resource_path.display());
+        return;
+    }
+    let add_result = {
+        let mut guard = cache.lock().await;
+        guard.add_content(resource_url, mime_type, body_len)
+    };
+    if let Err(err) = add_result {
+        warn!("Failed to register media-server resource cache file {}: {err}", resource_path.display());
+    }
+}
+
+async fn build_media_server_resource_response(
+    app_state: &Arc<AppState>,
+    resource_url: &str,
+    response: MediaServerResourceResponse,
+) -> axum::response::Response {
+    let mut response_builder = axum::response::Response::builder().status(response.status);
+    let safe_headers = safe_media_server_response_headers(&response.headers);
+    for (key, value) in &safe_headers {
+        response_builder = response_builder.header(key, value);
+    }
+
+    let mime_type = get_mime_type(&safe_headers, resource_url);
+    if !response_builder.headers_ref().is_some_and(|h| h.contains_key(header::CONTENT_TYPE)) {
+        response_builder = response_builder.header(
+            header::CONTENT_TYPE,
+            mime_type.clone().unwrap_or_else(|| mime::APPLICATION_OCTET_STREAM.to_string()),
+        );
+    }
+    if !response_builder.headers_ref().is_some_and(|h| h.contains_key(header::CACHE_CONTROL)) {
+        response_builder = response_builder.header(header::CACHE_CONTROL, "public, max-age=14400");
+    }
+
+    let can_cache = response.status == StatusCode::OK && !safe_headers.contains_key(header::CONTENT_RANGE);
+    let body = response.body;
+    if can_cache {
+        add_complete_resource_bytes_to_cache(app_state, resource_url, mime_type, body.clone()).await;
+    }
+
+    try_unwrap_body!(response_builder.body(Body::from(body)))
+}
+
+async fn media_server_image_resource_response(
+    app_state: &Arc<AppState>,
+    resource_url: &str,
+) -> axum::response::Response {
+    let image_ref = match parse_media_server_image_ref(resource_url) {
+        Ok(image_ref) => image_ref,
+        Err(error) => {
+            debug!("Invalid media-server image resource ref: {error}");
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+    };
+    let input_name = media_server_image_ref_input_name(&image_ref);
+    let Some(input) = app_state.app_config.get_input_by_name(&input_name) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if input
+        .media_server
+        .as_ref()
+        .is_none_or(|media_server| media_server.image_policy == MediaServerImagePolicyDto::Disabled)
+    {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    if let Some(cache) = app_state.cache.load().as_ref() {
+        let mut guard = cache.lock().await;
+        if let Some((resource_path, mime_type)) = guard.get_content(resource_url) {
+            trace_if_enabled!("Responding media-server resource from cache {}", sanitize_sensitive_info(resource_url));
+            return serve_file(
+                &resource_path,
+                mime_type.unwrap_or_else(|| mime::APPLICATION_OCTET_STREAM.to_string()),
+                Some("public, max-age=14400"),
+            )
+            .await
+            .into_response();
+        }
+    }
+
+    let http_client = MediaServerHttpClient::new(app_state.http_client.load().as_ref().clone());
+    let result = match input.input_type {
+        InputType::Plex => match PlexCatalogClient::from_input(input.as_ref(), http_client) {
+            Ok(client) => client.open_image(&image_ref).await,
+            Err(error) => Err(error),
+        },
+        InputType::Emby | InputType::Jellyfin => Err(MediaServerError::new(MediaServerErrorKind::MediaServerStreamOpenFailed)
+            .provider("media-server")
+            .detail("media-server image proxy is not implemented for this input type")),
+        InputType::M3u | InputType::Xtream | InputType::M3uBatch | InputType::XtreamBatch | InputType::Library => Err(
+            MediaServerError::new(MediaServerErrorKind::MediaServerStreamOpenFailed)
+                .provider("media-server")
+                .detail("media-server image ref is not backed by a media-server input"),
+        ),
+    };
+
+    match result {
+        Ok(response) => build_media_server_resource_response(app_state, resource_url, response).await,
+        Err(error) => {
+            let status = media_server_resource_error_status(&error);
+            debug!("Media-server image resource request failed: {error}");
+            status.into_response()
+        }
+    }
+}
+
 /// # Panics
 pub async fn resource_response(
     app_state: &Arc<AppState>,
@@ -3144,6 +3298,9 @@ pub async fn resource_response(
     }
     let filter: HeaderFilter = Some(Box::new(|key| key != "if-none-match" && key != "if-modified-since"));
     let req_headers = get_headers_from_request(req_headers, &filter);
+    if is_media_server_image_ref_url(resource_url) {
+        return media_server_image_resource_response(app_state, resource_url).await.into_response();
+    }
     if let Some(cache) = app_state.cache.load().as_ref() {
         let mut guard = cache.lock().await;
         if let Some((resource_path, mime_type)) = guard.get_content(resource_url) {
