@@ -174,7 +174,7 @@ fn validate_page_progress<T>(library: &MediaServerLibrary, page: &MediaServerPag
 mod tests {
     use super::*;
     use crate::media_server::{
-        MediaServerDescriptiveFacts, MediaServerImageRef, MediaServerLibraryRef, MediaServerKind,
+        MediaServerArtworkRefs, MediaServerDescriptiveFacts, MediaServerImageRef, MediaServerLibraryRef, MediaServerKind,
         MediaServerProviderIdHint, MediaServerResourceResponse, MediaServerSeason, MediaServerSeries,
         MediaServerStatus, MediaServerStreamRef, MediaServerStreamResponse,
     };
@@ -313,7 +313,7 @@ mod tests {
             descriptive_facts: None,
             technical_facts: None,
             stream_ref: None,
-            image_ref: None,
+            artwork: MediaServerArtworkRefs::default(),
         }
     }
 
@@ -335,7 +335,7 @@ mod tests {
             }),
             child_count: Some(1),
             episode_count: Some(2),
-            image_ref: None,
+            artwork: MediaServerArtworkRefs::default(),
         }
     }
 

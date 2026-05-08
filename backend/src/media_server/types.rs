@@ -169,6 +169,12 @@ pub struct MediaServerTechnicalFacts {
     pub audio: Option<MediaServerAudioTechnicalFacts>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MediaServerArtworkRefs {
+    pub poster: Option<MediaServerImageRef>,
+    pub backdrop: Option<MediaServerImageRef>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MediaServerMovie {
     pub input_name: Arc<str>,
@@ -183,7 +189,7 @@ pub struct MediaServerMovie {
     pub descriptive_facts: Option<MediaServerDescriptiveFacts>,
     pub technical_facts: Option<MediaServerTechnicalFacts>,
     pub stream_ref: Option<MediaServerStreamRef>,
-    pub image_ref: Option<MediaServerImageRef>,
+    pub artwork: MediaServerArtworkRefs,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,7 +206,7 @@ pub struct MediaServerSeries {
     pub descriptive_facts: Option<MediaServerDescriptiveFacts>,
     pub child_count: Option<u32>,
     pub episode_count: Option<u32>,
-    pub image_ref: Option<MediaServerImageRef>,
+    pub artwork: MediaServerArtworkRefs,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

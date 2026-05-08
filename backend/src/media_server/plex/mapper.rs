@@ -1,6 +1,7 @@
-use crate::media_server::plex::dto::{PlexDirectoryDto, PlexGuidDto, PlexMediaDto, PlexSectionDto, PlexVideoDto};
+use crate::media_server::plex::dto::{PlexDirectoryDto, PlexGuidDto, PlexImageDto, PlexMediaDto, PlexSectionDto, PlexVideoDto};
 use crate::media_server::{
-    MediaServerAudioTechnicalFacts, MediaServerDescriptiveFacts, MediaServerEpisode, MediaServerImageRef,
+    MediaServerArtworkRefs, MediaServerAudioTechnicalFacts, MediaServerDescriptiveFacts, MediaServerEpisode,
+    MediaServerImageRef,
     MediaServerLibrary, MediaServerLibraryKind, MediaServerLibraryRef, MediaServerMovie, MediaServerProviderIdHint,
     MediaServerSeason, MediaServerSeries, MediaServerStreamRef, MediaServerTechnicalFacts,
     MediaServerVideoTechnicalFacts,
@@ -76,7 +77,13 @@ pub fn plex_video_to_movie(
         descriptive_facts: video_descriptive_facts(video),
         technical_facts: media.and_then(media_technical_facts),
         stream_ref: plex_stream_ref(input_name, server_id, &rating_key, media),
-        image_ref: plex_image_ref(input_name, server_id, &rating_key, [&video.thumb, &video.art]),
+        artwork: plex_artwork_refs(
+            input_name,
+            server_id,
+            &rating_key,
+            plex_poster_image_path(video.thumb.as_deref(), &video.images),
+            plex_backdrop_image_path(video.art.as_deref(), &video.images),
+        ),
     })
 }
 
@@ -102,7 +109,13 @@ pub fn plex_directory_to_series(
         descriptive_facts: directory_descriptive_facts(directory),
         child_count: directory.child_count,
         episode_count: directory.leaf_count,
-        image_ref: plex_image_ref(input_name, server_id, &rating_key, [&directory.thumb, &directory.art, &directory.theme]),
+        artwork: plex_artwork_refs(
+            input_name,
+            server_id,
+            &rating_key,
+            plex_poster_image_path(directory.thumb.as_deref(), &directory.images),
+            plex_backdrop_image_path(directory.art.as_deref(), &directory.images),
+        ),
     })
 }
 
@@ -130,7 +143,12 @@ pub fn plex_directory_to_season(
         provider_hints: provider_hints(directory.guid.as_deref(), &directory.guids),
         descriptive_facts: directory_descriptive_facts(directory),
         episode_count: directory.leaf_count,
-        image_ref: plex_image_ref(input_name, server_id, &rating_key, [&directory.thumb, &directory.art]),
+        image_ref: plex_image_ref_from_path(
+            input_name,
+            server_id,
+            &rating_key,
+            plex_poster_image_path(directory.thumb.as_deref(), &directory.images),
+        ),
     })
 }
 
@@ -160,7 +178,12 @@ pub fn plex_video_to_episode(
         descriptive_facts: video_descriptive_facts(video),
         technical_facts: media.and_then(media_technical_facts),
         stream_ref: plex_stream_ref(input_name, server_id, &rating_key, media),
-        image_ref: plex_image_ref(input_name, server_id, &rating_key, [&video.thumb, &video.art]),
+        image_ref: plex_image_ref_from_path(
+            input_name,
+            server_id,
+            &rating_key,
+            plex_poster_image_path(video.thumb.as_deref(), &video.images),
+        ),
     })
 }
 
@@ -259,19 +282,61 @@ fn first_part_key(media: &PlexMediaDto) -> Option<Arc<str>> {
     media.parts.iter().find_map(|part| non_blank(part.key.as_deref()))
 }
 
-fn plex_image_ref<const N: usize>(
+fn plex_artwork_refs(
     input_name: &Arc<str>,
     server_id: &Arc<str>,
     rating_key: &Arc<str>,
-    candidates: [&Option<String>; N],
+    poster_path: Option<Arc<str>>,
+    backdrop_path: Option<Arc<str>>,
+) -> MediaServerArtworkRefs {
+    MediaServerArtworkRefs {
+        poster: plex_image_ref_from_path(input_name, server_id, rating_key, poster_path),
+        backdrop: plex_image_ref_from_path(input_name, server_id, rating_key, backdrop_path),
+    }
+}
+
+fn plex_image_ref_from_path(
+    input_name: &Arc<str>,
+    server_id: &Arc<str>,
+    rating_key: &Arc<str>,
+    image_path: Option<Arc<str>>,
 ) -> Option<MediaServerImageRef> {
-    let image_path = candidates.into_iter().find_map(|candidate| non_blank(candidate.as_deref()))?;
     Some(MediaServerImageRef::Plex {
         input_name: Arc::clone(input_name),
         server_id: Arc::clone(server_id),
         rating_key: Arc::clone(rating_key),
-        image_path,
+        image_path: image_path?,
     })
+}
+
+fn plex_poster_image_path(attribute_path: Option<&str>, images: &[PlexImageDto]) -> Option<Arc<str>> {
+    non_blank(attribute_path).or_else(|| plex_image_path_by_type(images, is_plex_poster_image_type))
+}
+
+fn plex_backdrop_image_path(attribute_path: Option<&str>, images: &[PlexImageDto]) -> Option<Arc<str>> {
+    non_blank(attribute_path).or_else(|| plex_image_path_by_type(images, is_plex_backdrop_image_type))
+}
+
+fn plex_image_path_by_type(
+    images: &[PlexImageDto],
+    matches_type: fn(&str) -> bool,
+) -> Option<Arc<str>> {
+    images.iter().find_map(|image| {
+        let image_type = image.image_type.as_deref()?.trim().to_ascii_lowercase();
+        if matches_type(&image_type) {
+            non_blank(image.url.as_deref())
+        } else {
+            None
+        }
+    })
+}
+
+fn is_plex_poster_image_type(image_type: &str) -> bool {
+    matches!(image_type, "coverposter" | "poster" | "cover" | "thumb" | "thumbnail")
+}
+
+fn is_plex_backdrop_image_type(image_type: &str) -> bool {
+    matches!(image_type, "background" | "backdrop" | "art" | "fanart")
 }
 
 fn video_descriptive_facts(video: &PlexVideoDto) -> Option<MediaServerDescriptiveFacts> {
@@ -438,6 +503,13 @@ mod tests {
     fn server_id() -> Arc<str> { Arc::<str>::from("machine-redacted") }
     fn library_id() -> Arc<str> { Arc::<str>::from("library-redacted") }
 
+    fn plex_image_path(image_ref: Option<&MediaServerImageRef>) -> Option<&str> {
+        match image_ref? {
+            MediaServerImageRef::Plex { image_path, .. } => Some(image_path.as_ref()),
+            _ => None,
+        }
+    }
+
     #[test]
     fn maps_plex_movie_catalog_row_to_media_server_movie_without_leaking_part_file() {
         let container: PlexMediaContainerDto = quick_xml::de::from_str(PLEX_MOVIES_XML).expect("fixture parses");
@@ -480,6 +552,8 @@ mod tests {
                 part_key: "/library/parts/part-redacted/file.mkv".into(),
             })
         );
+        assert_eq!(plex_image_path(movie.artwork.poster.as_ref()), Some("/library/metadata/rating-redacted-1/thumb"));
+        assert_eq!(plex_image_path(movie.artwork.backdrop.as_ref()), Some("/library/metadata/rating-redacted-1/art"));
         assert!(format!("{movie:?}").contains("/library/parts/part-redacted/file.mkv"));
         assert!(!format!("{movie:?}").contains("/redacted/upstream/path"));
     }
@@ -499,7 +573,8 @@ mod tests {
         let series_facts = series.descriptive_facts.as_ref().expect("series descriptive facts");
         assert_eq!(series_facts.summary.as_deref(), Some("Show summary redacted"));
         assert_eq!(series_facts.genres.iter().map(AsRef::as_ref).collect::<Vec<_>>(), vec!["Mystery"]);
-        assert!(matches!(series.image_ref, Some(MediaServerImageRef::Plex { .. })));
+        assert_eq!(plex_image_path(series.artwork.poster.as_ref()), Some("/library/metadata/series-redacted-1/thumb"));
+        assert_eq!(plex_image_path(series.artwork.backdrop.as_ref()), Some("/library/metadata/series-redacted-1/art"));
 
         let season = plex_directory_to_season(&input_name(), &server_id(), &library_id(), &seasons.directories[0])
             .expect("season maps");
