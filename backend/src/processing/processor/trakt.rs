@@ -597,6 +597,7 @@ mod tests {
                     added: None,
                     release_date: None,
                     series_release_date: None,
+                    plot: None,
                     tmdb: None,
                     movie_image: "".intern(),
                     container_extension: "mkv".intern(),
