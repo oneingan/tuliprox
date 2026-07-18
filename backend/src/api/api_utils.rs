@@ -1628,7 +1628,7 @@ fn select_provider_stream_url(
     provider_cfg: &Arc<ProviderConfig>,
     accept_requested_stream_url: bool,
 ) -> Option<(Arc<str>, String)> {
-    if accept_requested_stream_url {
+    if accept_requested_stream_url || is_media_server_playback_url(input, stream_url) {
         return Some((provider_cfg.name.clone(), stream_url.to_string()));
     }
     if stream_url_matches_provider(stream_url, provider_cfg) {
@@ -4679,6 +4679,19 @@ mod tests {
         let stream_url = "http://cdn.example/open/playlist.m3u8";
 
         assert_eq!(get_stream_alternative_url(stream_url, &input, &alias), None);
+    }
+
+    #[test]
+    fn provider_selection_preserves_internal_media_server_stream_refs() {
+        let input = ConfigInput { input_type: InputType::Plex, ..ConfigInput::default() };
+        let provider = test_runtime_provider_without_credentials("https://plex.example", InputType::Plex);
+        let stream_ref = "media-server://plex/server/rating?part_key=%2Fvideo";
+
+        let (provider_name, selected_url) =
+            select_provider_stream_url(stream_ref, &input, &provider, false).expect("media-server ref is accepted");
+
+        assert_eq!(provider_name, provider.name);
+        assert_eq!(selected_url, stream_ref);
     }
 
     #[test]
