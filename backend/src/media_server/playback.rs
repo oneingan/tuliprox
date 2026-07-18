@@ -106,6 +106,10 @@ pub fn safe_media_server_response_headers(headers: &HeaderMap) -> HeaderMap {
     safe
 }
 
+pub fn is_media_server_image_ref_url(resource_url: &str) -> bool {
+    resource_url.starts_with("media-server://image/")
+}
+
 pub fn parse_media_server_stream_ref(input_name: &Arc<str>, item_url: &str) -> Result<MediaServerStreamRef, MediaServerError> {
     let Some(rest) = item_url.strip_prefix("media-server://") else {
         return Err(MediaServerError::new(MediaServerErrorKind::MediaServerStreamOpenFailed)
@@ -382,6 +386,12 @@ mod tests {
         let provider = classify_playback_origin(InputType::M3u, PlaylistItemType::Live, &input_name, "http://example.invalid/live")
             .expect("provider classifies");
         assert_eq!(provider, PlaybackOrigin::Provider);
+    }
+
+    #[test]
+    fn identifies_media_server_image_refs_separately_from_stream_refs() {
+        assert!(is_media_server_image_ref_url("media-server://image/plex/input/server/rating?image_path=%2Fposter"));
+        assert!(!is_media_server_image_ref_url("media-server://plex/server/rating?part_key=%2Fvideo"));
     }
 
     #[test]

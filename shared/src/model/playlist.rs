@@ -423,6 +423,8 @@ impl PlaylistItemHeader {
     }
 }
 
+fn is_media_server_image_ref_url(resource_url: &str) -> bool { resource_url.starts_with("media-server://image/") }
+
 macro_rules! to_m3u_non_empty_fields {
     ($header:expr, $line:expr, $(($prop:ident, $field:expr)),*;) => {
         $(
@@ -630,7 +632,12 @@ impl M3uPlaylistItem {
             if let (true, Some(resource_url)) = (rewrite_urls, self.t_resource_url.as_ref()) {
                 to_m3u_resource_non_empty_fields!(self, resource_url, line, (logo, "tvg-logo"), (logo_small, "tvg-logo-small"););
             } else {
-                to_m3u_non_empty_fields!(self, line, (logo, "tvg-logo"), (logo_small, "tvg-logo-small"););
+                if !self.logo.is_empty() && !is_media_server_image_ref_url(&self.logo) {
+                    write_m3u_attr(&mut line, "tvg-logo", &self.logo);
+                }
+                if !self.logo_small.is_empty() && !is_media_server_image_ref_url(&self.logo_small) {
+                    write_m3u_attr(&mut line, "tvg-logo-small", &self.logo_small);
+                }
             }
         }
 
@@ -796,6 +803,12 @@ impl XtreamMappingOptions {
         TRUSTED_WEB_UI_RESOURCE_PREFIXES.iter().any(|prefix| resource_url.starts_with(prefix))
     }
 
+    fn is_proxyable_resource_ref(resource_url: &str) -> bool {
+        resource_url.starts_with("http://")
+            || resource_url.starts_with("https://")
+            || is_media_server_image_ref_url(resource_url)
+    }
+
     fn build_reverse_proxy_base_url(
         &self,
         xtream_cluster: XtreamCluster,
@@ -843,9 +856,12 @@ impl XtreamMappingOptions {
         let rewrite_url = self.build_reverse_proxy_base_url(xtream_cluster, item_type, virtual_id);
 
         if let Some(url) = rewrite_url {
-            if resource_url.starts_with("http://") || resource_url.starts_with("https://") {
+            if Self::is_proxyable_resource_ref(resource_url) {
                 return format!("{url}/{resource_field}");
             }
+        }
+        if is_media_server_image_ref_url(resource_url) {
+            return String::new();
         }
         resource_url.to_string()
     }
@@ -876,9 +892,12 @@ impl XtreamMappingOptions {
         let rewrite_url = self.build_reverse_proxy_base_url(xtream_cluster, item_type, virtual_id);
 
         if let Some(url) = rewrite_url {
-            if resource_url.starts_with("http://") || resource_url.starts_with("https://") {
+            if Self::is_proxyable_resource_ref(resource_url) {
                 return format!("{url}/{resource_field}{}_{index}", xtream_const::XC_PROP_BACKDROP_PATH);
             }
+        }
+        if is_media_server_image_ref_url(resource_url) {
+            return String::new();
         }
         resource_url.to_string()
     }
@@ -1593,6 +1612,57 @@ mod tests {
     }
 
     #[test]
+    fn get_resource_urls_proxy_media_server_images_for_xtream_clients() {
+        let mut options = sample_options();
+        options.web_ui_request = false;
+        options.base_url = "http://proxy.example/iptv".to_string();
+        options.reverse_item_types = PlaylistItemTypeSet::empty();
+        options.resource_proxy_item_types = PlaylistItemTypeSet::from_item(PlaylistItemType::Video);
+        options.resource_proxy_item_types.insert(PlaylistItemType::Series);
+        let image_ref = "media-server://image/plex/input/server/rating?image_path=%2Fposter";
+
+        assert_eq!(
+            options.get_resource_url(XtreamCluster::Video, PlaylistItemType::Video, 2018, image_ref, "logo"),
+            "http://proxy.example/iptv/resource/movie/user/pass/2018/logo",
+        );
+        assert_eq!(
+            options.get_bd_path_resource_url(
+                XtreamCluster::Series,
+                PlaylistItemType::Series,
+                2019,
+                image_ref,
+                "",
+                0,
+            ),
+            "http://proxy.example/iptv/resource/series/user/pass/2019/backdrop_path_0",
+        );
+    }
+
+    #[test]
+    fn get_resource_urls_do_not_leak_unproxied_media_server_image_refs() {
+        let mut options = sample_options();
+        options.web_ui_request = false;
+        options.resource_proxy_item_types = PlaylistItemTypeSet::empty();
+        let image_ref = "media-server://image/plex/input/server/rating?image_path=%2Fposter";
+
+        assert_eq!(
+            options.get_resource_url(XtreamCluster::Video, PlaylistItemType::Video, 2018, image_ref, "logo"),
+            "",
+        );
+        assert_eq!(
+            options.get_bd_path_resource_url(
+                XtreamCluster::Series,
+                PlaylistItemType::Series,
+                2019,
+                image_ref,
+                "",
+                0,
+            ),
+            "",
+        );
+    }
+
+    #[test]
     fn get_resource_url_does_not_bypass_untrusted_root_relative_paths_for_web_ui_requests() {
         let options = sample_options();
         let resource_url = "/provider-controlled/poster.jpg";
@@ -1786,6 +1856,29 @@ mod tests {
 
         let output = item.to_m3u(None, false);
         assert!(output.contains(r#"tvg-id="epg_channel_123""#), "M3U output must contain tvg-id from epg_channel_id");
+    }
+
+    #[test]
+    fn m3u_output_does_not_leak_unproxied_media_server_image_refs() {
+        let item = PlaylistItem {
+            header: PlaylistItemHeader {
+                id: "item".intern(),
+                name: "Test Channel".intern(),
+                title: "Test Channel".intern(),
+                logo: "media-server://image/plex/input/server/rating?image_path=%2Fposter".intern(),
+                group: "Test Group".intern(),
+                url: "http://provider.example/live/channel.ts".intern(),
+                input_name: "input".intern(),
+                item_type: PlaylistItemType::Live,
+                xtream_cluster: XtreamCluster::Live,
+                ..PlaylistItemHeader::default()
+            },
+        };
+
+        let output = M3uPlaylistItem::from(&item).to_m3u(None, false);
+
+        assert!(!output.contains("media-server://"));
+        assert!(!output.contains("tvg-logo="));
     }
 
     #[test]
