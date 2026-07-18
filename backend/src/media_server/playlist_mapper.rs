@@ -142,7 +142,8 @@ fn media_server_movie_to_playlist_item(movie: &MediaServerMovie) -> PlaylistItem
     let uuid = generate_provider_playlist_uuid(&movie.input_name, &stable_id, PlaylistItemType::Video);
     let release_date = movie.release_date.clone().or_else(|| release_date_from_year(movie.year));
     let image_url = movie.image_ref.as_ref().map(media_server_image_ref_to_internal_url).map(Arc::<str>::from);
-    let details = movie_details(movie, release_date, image_url.clone());
+    let backdrop_url = movie.backdrop_image_ref.as_ref().map(media_server_image_ref_to_internal_url).map(Arc::<str>::from);
+    let details = movie_details(movie, release_date, image_url.clone(), backdrop_url);
     let rating = media_server_rating(movie.descriptive_facts.as_ref());
 
     PlaylistItem {
@@ -173,6 +174,7 @@ fn media_server_movie_to_playlist_item(movie: &MediaServerMovie) -> PlaylistItem
                 is_adult: 0,
                 details,
             }))),
+            logo: image_url.unwrap_or_else(|| "".intern()),
             ..PlaylistItemHeader::default()
         },
     }
@@ -190,6 +192,7 @@ fn media_server_series_to_playlist_item(series: &MediaServerSeries, seasons: &[&
     let release_date = series.release_date.clone().or_else(|| release_date_from_year(series.year));
     let rating = media_server_rating(series.descriptive_facts.as_ref()).unwrap_or_default();
     let image_url = series.image_ref.as_ref().map(media_server_image_ref_to_internal_url).map(Arc::<str>::from);
+    let backdrop_url = series.backdrop_image_ref.as_ref().map(media_server_image_ref_to_internal_url).map(Arc::<str>::from);
 
     PlaylistItem {
         header: PlaylistItemHeader {
@@ -205,8 +208,8 @@ fn media_server_series_to_playlist_item(series: &MediaServerSeries, seasons: &[&
             additional_properties: Some(StreamProperties::Series(Box::new(SeriesStreamProperties {
                 name: series.title.clone(),
                 series_id: 0,
-                cover: image_url.unwrap_or_else(|| "".intern()),
-                backdrop_path: None,
+                cover: image_url.clone().unwrap_or_else(|| "".intern()),
+                backdrop_path: backdrop_url.map(|backdrop| vec![backdrop]),
                 category_id: 0,
                 cast: joined_values(series.descriptive_facts.as_ref().map(|facts| facts.cast.as_slice()))
                     .unwrap_or_else(|| "".intern()),
@@ -223,6 +226,7 @@ fn media_server_series_to_playlist_item(series: &MediaServerSeries, seasons: &[&
                 tmdb: provider_tmdb_id(&series.provider_hints),
                 details: series_details(series, seasons),
             }))),
+            logo: image_url.unwrap_or_else(|| "".intern()),
             ..PlaylistItemHeader::default()
         },
     }
@@ -272,11 +276,12 @@ fn media_server_episode_to_playlist_item(episode: &MediaServerEpisode, parent_co
                 series_release_date: None,
                 plot,
                 tmdb: provider_tmdb_id(&episode.provider_hints),
-                movie_image: image_url.unwrap_or_else(|| "".intern()),
+                movie_image: image_url.clone().unwrap_or_else(|| "".intern()),
                 container_extension: media_server_container_extension(technical),
                 video: technical.and_then(media_server_video_json),
                 audio: technical.and_then(media_server_audio_json),
             }))),
+            logo: image_url.unwrap_or_else(|| "".intern()),
             ..PlaylistItemHeader::default()
         },
     }
@@ -286,6 +291,7 @@ fn movie_details(
     movie: &MediaServerMovie,
     release_date: Option<Arc<str>>,
     image_url: Option<Arc<str>>,
+    backdrop_url: Option<Arc<str>>,
 ) -> Option<VideoStreamDetailProperties> {
     let technical = movie.technical_facts.as_ref();
     let descriptive = movie.descriptive_facts.as_ref();
@@ -314,7 +320,7 @@ fn movie_details(
         rating_count_kinopoisk: 0,
         country: joined_values(descriptive.map(|facts| facts.countries.as_slice())),
         genre: joined_values(descriptive.map(|facts| facts.genres.as_slice())),
-        backdrop_path: None,
+        backdrop_path: backdrop_url.map(|backdrop| vec![backdrop]),
         duration_secs,
         duration: technical.and_then(|facts| facts.duration_secs.map(duration_secs_to_xtream_duration)),
         video,
@@ -337,16 +343,19 @@ fn series_details(
 
     let season_details = seasons
         .iter()
-        .map(|season| SeriesStreamDetailSeasonProperties {
-            name: season.title.clone(),
-            season_number: season.season.unwrap_or_default(),
-            episode_count: season.episode_count.unwrap_or_default(),
-            overview: season.descriptive_facts.as_ref().and_then(|facts| facts.summary.clone()),
-            air_date: season.release_date.clone().or_else(|| release_date_from_year(season.year)),
-            cover: None,
-            cover_tmdb: None,
-            cover_big: None,
-            duration: None,
+        .map(|season| {
+            let image_url = season.image_ref.as_ref().map(media_server_image_ref_to_internal_url).map(Arc::<str>::from);
+            SeriesStreamDetailSeasonProperties {
+                name: season.title.clone(),
+                season_number: season.season.unwrap_or_default(),
+                episode_count: season.episode_count.unwrap_or_default(),
+                overview: season.descriptive_facts.as_ref().and_then(|facts| facts.summary.clone()),
+                air_date: season.release_date.clone().or_else(|| release_date_from_year(season.year)),
+                cover: image_url.clone(),
+                cover_tmdb: None,
+                cover_big: image_url,
+                duration: None,
+            }
         })
         .collect::<Vec<_>>();
 
@@ -588,6 +597,7 @@ mod tests {
                 media_source_id: Some("media/source".into()),
             }),
             image_ref: None,
+            backdrop_image_ref: None,
         }
     }
 
@@ -639,6 +649,7 @@ mod tests {
             child_count: Some(1),
             episode_count: Some(2),
             image_ref: None,
+            backdrop_image_ref: None,
         }
     }
 
@@ -849,13 +860,19 @@ mod tests {
     }
 
     #[test]
-    fn projects_media_server_image_refs_as_internal_resource_urls() {
+    fn projects_media_server_artwork_roles_as_internal_resource_urls() {
         let mut movie = movie();
         movie.image_ref = Some(MediaServerImageRef::Plex {
             input_name: "media_server".into(),
             server_id: "server/one".into(),
             rating_key: "rating".into(),
             image_path: "/library/metadata/rating/thumb/redacted".into(),
+        });
+        movie.backdrop_image_ref = Some(MediaServerImageRef::Plex {
+            input_name: "media_server".into(),
+            server_id: "server/one".into(),
+            rating_key: "rating".into(),
+            image_path: "/library/metadata/rating/art/redacted".into(),
         });
         let mut episode = episode();
         episode.image_ref = Some(MediaServerImageRef::Emby {
@@ -873,48 +890,71 @@ mod tests {
             image_kind: "Primary".into(),
             tag: Some("tag-redacted".into()),
         });
+        series.backdrop_image_ref = Some(MediaServerImageRef::Jellyfin {
+            input_name: "media_server".into(),
+            server_id: "server".into(),
+            item_id: "series".into(),
+            image_kind: "Backdrop".into(),
+            tag: Some("backdrop-tag-redacted".into()),
+        });
+        let mut season = season();
+        season.image_ref = Some(MediaServerImageRef::Plex {
+            input_name: "media_server".into(),
+            server_id: "server".into(),
+            rating_key: "season".into(),
+            image_path: "/library/metadata/season/thumb/redacted".into(),
+        });
 
         let groups = media_server_catalog_snapshot_to_playlist(&MediaServerCatalogSnapshot {
             movies: vec![movie],
             series: vec![series],
+            seasons: vec![season],
             episodes: vec![episode],
             ..MediaServerCatalogSnapshot::default()
         });
 
+        let movie_logo = "media-server://image/plex/media_server/server%2Fone/rating?image_path=%2Flibrary%2Fmetadata%2Frating%2Fthumb%2Fredacted";
+        assert_eq!(groups[0].channels[0].header.logo.as_ref(), movie_logo);
         let Some(StreamProperties::Video(video)) = &groups[0].channels[0].header.additional_properties else {
             panic!("expected video properties");
         };
-        assert_eq!(
-            video.stream_icon.as_ref(),
-            "media-server://image/plex/media_server/server%2Fone/rating?image_path=%2Flibrary%2Fmetadata%2Frating%2Fthumb%2Fredacted"
-        );
+        assert_eq!(video.stream_icon.as_ref(), movie_logo);
         let details = video.details.as_ref().expect("movie year should create details");
+        assert_eq!(details.cover_big.as_deref(), Some(movie_logo));
+        assert_eq!(details.movie_image.as_deref(), Some(movie_logo));
         assert_eq!(
-            details.cover_big.as_deref(),
-            Some("media-server://image/plex/media_server/server%2Fone/rating?image_path=%2Flibrary%2Fmetadata%2Frating%2Fthumb%2Fredacted")
+            details.backdrop_path.as_ref().and_then(|items| items.first()).map(Arc::as_ref),
+            Some("media-server://image/plex/media_server/server%2Fone/rating?image_path=%2Flibrary%2Fmetadata%2Frating%2Fart%2Fredacted")
         );
-        assert_eq!(
-            details.movie_image.as_deref(),
-            Some("media-server://image/plex/media_server/server%2Fone/rating?image_path=%2Flibrary%2Fmetadata%2Frating%2Fthumb%2Fredacted")
-        );
-        assert!(details.backdrop_path.is_none());
 
+        let series_logo = "media-server://image/jellyfin/media_server/server/series?image_kind=Primary&tag=tag-redacted";
+        assert_eq!(groups[1].channels[0].header.logo.as_ref(), series_logo);
         let Some(StreamProperties::Series(series)) = &groups[1].channels[0].header.additional_properties else {
             panic!("expected series properties");
         };
+        assert_eq!(series.cover.as_ref(), series_logo);
         assert_eq!(
-            series.cover.as_ref(),
-            "media-server://image/jellyfin/media_server/server/series?image_kind=Primary&tag=tag-redacted"
+            series.backdrop_path.as_ref().and_then(|items| items.first()).map(Arc::as_ref),
+            Some("media-server://image/jellyfin/media_server/server/series?image_kind=Backdrop&tag=backdrop-tag-redacted")
         );
-        assert!(series.backdrop_path.is_none());
+        let season = series
+            .details
+            .as_ref()
+            .and_then(|details| details.seasons.as_ref())
+            .and_then(|seasons| seasons.first())
+            .expect("season artwork should be mapped");
+        assert_eq!(
+            season.cover.as_deref(),
+            Some("media-server://image/plex/media_server/server/season?image_path=%2Flibrary%2Fmetadata%2Fseason%2Fthumb%2Fredacted")
+        );
+        assert_eq!(season.cover, season.cover_big);
 
+        let episode_logo = "media-server://image/emby/media_server/server/episode?image_kind=Primary&tag=tag-redacted";
+        assert_eq!(groups[1].channels[1].header.logo.as_ref(), episode_logo);
         let Some(StreamProperties::Episode(episode)) = &groups[1].channels[1].header.additional_properties else {
             panic!("expected episode properties");
         };
-        assert_eq!(
-            episode.movie_image.as_ref(),
-            "media-server://image/emby/media_server/server/episode?image_kind=Primary&tag=tag-redacted"
-        );
+        assert_eq!(episode.movie_image.as_ref(), episode_logo);
     }
 
     #[test]

@@ -333,6 +333,7 @@ mod tests {
             technical_facts: None,
             stream_ref: None,
             image_ref: None,
+            backdrop_image_ref: None,
         }
     }
 
@@ -355,6 +356,7 @@ mod tests {
             child_count: Some(1),
             episode_count: Some(2),
             image_ref: None,
+            backdrop_image_ref: None,
         }
     }
 
