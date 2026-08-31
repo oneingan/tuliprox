@@ -32,6 +32,7 @@ use crate::{
         m3u::{is_xtream_m3u_catchup_supported, resolve_xtream_m3u_catchup_url, ResolvedM3uCatchup},
         xtream::{self, create_vod_info_from_item},
     },
+    media_server::is_media_server_image_ref_url,
     model::{
         xtream_mapping_option_from_target_options, ConfigInput, ConfigInputFlags, ConfigTarget, InputSource,
         ProxyUserCredentials,
@@ -1072,7 +1073,9 @@ async fn xtream_player_api_resource(
     match stream_url {
         None => axum::http::StatusCode::NOT_FOUND.into_response(),
         Some(url) => {
-            if user.proxy.is_redirect(pli.item_type) || target.is_force_redirect(pli.item_type) {
+            if (user.proxy.is_redirect(pli.item_type) || target.is_force_redirect(pli.item_type))
+                && !is_media_server_image_ref_url(&url)
+            {
                 let input = app_state.app_config.get_input_by_name(&pli.input_name);
                 let redirect_url = api_utils::resolve_redirect_location(input.as_deref(), &url);
                 match redirect_url {
