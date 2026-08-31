@@ -23,7 +23,7 @@ use crate::{
             media_server_stream_response as open_media_server_proxy_stream_response, parse_media_server_image_ref,
             parse_media_server_stream_ref,
         },
-        MediaServerError, MediaServerErrorKind, MediaServerHttpClient, MediaServerImageRef,
+        MediaServerError, MediaServerErrorKind, MediaServerHttpClient, MediaServerImageRef, MediaServerStreamRef,
     },
     model::{AppConfig, ConfigInput, ConfigTarget, InputUserInfo, ProxyUserCredentials},
     processing::{
@@ -989,6 +989,10 @@ fn select_provider_stream_url(
     provider_cfg: &Arc<ProviderConfig>,
     accept_requested_stream_url: bool,
 ) -> Option<(Arc<str>, String)> {
+    if is_media_server_stream_ref_url(stream_url) {
+        return is_media_server_stream_ref_for_input(input, stream_url)
+            .then(|| (provider_cfg.name.clone(), stream_url.to_string()));
+    }
     if accept_requested_stream_url {
         return Some((provider_cfg.name.clone(), stream_url.to_string()));
     }
@@ -996,6 +1000,19 @@ fn select_provider_stream_url(
         Some((provider_cfg.name.clone(), stream_url.to_string()))
     } else {
         get_stream_alternative_url(stream_url, input, provider_cfg).map(|url| (provider_cfg.name.clone(), url))
+    }
+}
+
+fn is_media_server_stream_ref_for_input(input: &ConfigInput, stream_url: &str) -> bool {
+    if stream_url.starts_with("media-server://unavailable/") {
+        return input.input_type.is_media_server();
+    }
+
+    match parse_media_server_stream_ref(&input.name, stream_url) {
+        Ok(MediaServerStreamRef::Plex { .. }) => input.input_type == InputType::Plex,
+        Ok(MediaServerStreamRef::Emby { .. }) => input.input_type == InputType::Emby,
+        Ok(MediaServerStreamRef::Jellyfin { .. }) => input.input_type == InputType::Jellyfin,
+        Err(_) => false,
     }
 }
 

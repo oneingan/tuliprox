@@ -581,6 +581,57 @@ fn get_stream_alternative_url_does_not_passthrough_arbitrary_open_external_url_f
 }
 
 #[test]
+fn provider_selection_preserves_internal_media_server_stream_refs() {
+    let input = ConfigInput { name: "media_server".intern(), input_type: InputType::Plex, ..ConfigInput::default() };
+    let provider = test_runtime_provider_without_credentials("https://plex.example", InputType::Plex);
+    let stream_ref = "media-server://plex/server/rating?part_key=%2Fvideo";
+
+    let (provider_name, selected_url) = select_provider_stream_url(stream_ref, &input, &provider, false)
+        .expect("matching media-server ref is accepted");
+
+    assert_eq!(provider_name, provider.name);
+    assert_eq!(selected_url, stream_ref);
+
+    let unavailable_ref = "media-server://unavailable/server/library/item";
+    let (_, selected_url) = select_provider_stream_url(unavailable_ref, &input, &provider, false)
+        .expect("unavailable media-server marker remains classifiable downstream");
+    assert_eq!(selected_url, unavailable_ref);
+}
+
+#[test]
+fn provider_selection_rejects_foreign_or_non_playback_media_server_refs() {
+    let plex_input =
+        ConfigInput { name: "media_server".intern(), input_type: InputType::Plex, ..ConfigInput::default() };
+    let plex_provider = test_runtime_provider_without_credentials("https://plex.example", InputType::Plex);
+
+    for stream_url in [
+        "media-server://jellyfin/server/item",
+        "media-server://image/plex/media_server/server/rating?image_path=%2Fposter",
+        "https://attacker.example/video.mkv",
+    ] {
+        assert_eq!(select_provider_stream_url(stream_url, &plex_input, &plex_provider, false), None);
+    }
+
+    let m3u_input = ConfigInput {
+        name: "m3u".intern(),
+        url: "https://provider.example/playlist.m3u8".to_string(),
+        input_type: InputType::M3u,
+        ..ConfigInput::default()
+    };
+    let m3u_provider =
+        test_runtime_provider_without_credentials("https://provider.example/playlist.m3u8", InputType::M3u);
+    assert_eq!(
+        select_provider_stream_url(
+            "media-server://plex/server/rating?part_key=%2Fvideo",
+            &m3u_input,
+            &m3u_provider,
+            false,
+        ),
+        None,
+    );
+}
+
+#[test]
 fn media_server_proxy_response_header_filter_drops_hop_by_hop_headers() {
     for name in [
         "connection",
