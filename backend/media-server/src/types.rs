@@ -182,6 +182,7 @@ pub struct MediaServerMovie {
     pub technical_facts: Option<MediaServerTechnicalFacts>,
     pub stream_ref: Option<MediaServerStreamRef>,
     pub image_ref: Option<MediaServerImageRef>,
+    pub backdrop_image_ref: Option<MediaServerImageRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,6 +200,7 @@ pub struct MediaServerSeries {
     pub child_count: Option<u32>,
     pub episode_count: Option<u32>,
     pub image_ref: Option<MediaServerImageRef>,
+    pub backdrop_image_ref: Option<MediaServerImageRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
